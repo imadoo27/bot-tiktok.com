@@ -1,157 +1,153 @@
 import json
 import os
 import time
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram import *
+from telegram.ext import *
 
 TOKEN = "7951621272:AAEh6M0-jdvWpvHkDXs2amdzPs6E7a7PAJs"
 ADMIN_ID = 7377140025
 DATA_FILE = "users.json"
 
-service_names = {
-    "likes": "❤️ لايكات تيك توك",
-    "views": "👁️ مشاهدات تيك توك",
-    "highlight": "🌟 تمييز تيك توك"
-}
-
-service_cost = {
-    "likes": 15,
-    "views": 10,
-    "highlight": 15
-}
-
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
-
-def save_data(data):
+# تحميل / إنشاء البيانات
+if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump({}, f)
 
-users = load_data()
+with open(DATA_FILE, "r") as f:
+    users = json.load(f)
+
+def save_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump(users, f)
 
 def get_user(uid):
-    if str(uid) not in users:
-        users[str(uid)] = {
+    uid = str(uid)
+    if uid not in users:
+        users[uid] = {
             "points": 0,
-            "used": {},
             "invited": [],
-            "ref_by": None
+            "used": {},
+            "ref": None
         }
-    return users[str(uid)]
+    return users[uid]
 
-def is_locked(uid, service):
-    u = get_user(uid)
-    return u["used"].get(service, 0) > time.time()
+def is_limited(uid, service):
+    now = time.time()
+    return get_user(uid)["used"].get(service, 0) > now
 
-def lock_service(uid, service):
-    get_user(uid)["used"][service] = time.time() + 8 * 3600
-    save_data(users)
+def set_limit(uid, service, hours=8):
+    get_user(uid)["used"][service] = time.time() + hours * 3600
+    save_data()
 
-def add_points(uid, pts):
-    get_user(uid)["points"] += pts
-    save_data(users)
+def add_points(uid, count):
+    get_user(uid)["points"] += count
+    save_data()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+def deduct_points(uid, count):
+    get_user(uid)["points"] -= count
+    save_data()
+
+def start(update, context):
+    user = update.message.from_user
+    uid = str(user.id)
     args = context.args
 
-    # تسجيل الدعوة
     if args:
-        inviter_id = args[0]
-        if inviter_id != str(uid) and uid not in get_user(inviter_id)["invited"]:
-            get_user(inviter_id)["invited"].append(uid)
-            add_points(inviter_id, 1)
+        ref = args[0]
+        if ref != uid:
+            u = get_user(uid)
+            if not u["ref"]:
+                u["ref"] = ref
+                if uid not in get_user(ref)["invited"]:
+                    get_user(ref)["invited"].append(uid)
+                    add_points(ref, 1)
 
-    buttons = [
-        [InlineKeyboardButton("❤️ لايكات تيك توك", callback_data="likes_time")],
-        [InlineKeyboardButton("👁️ مشاهدات تيك توك", callback_data="views_time")],
-        [InlineKeyboardButton("🌟 تمييز تيك توك", callback_data="highlight_time")],
-        [InlineKeyboardButton("💎 استبدال بالنقاط", callback_data="menu_points")],
-        [InlineKeyboardButton("📨 رابط دعوة", callback_data="invite_link")]
+    get_user(uid)  # تأكد من إنشاء المستخدم
+    save_data()
+
+    keyboard = [
+        [InlineKeyboardButton("❤️ لايكات تيك توك", callback_data="likes")],
+        [InlineKeyboardButton("👁️ مشاهدات تيك توك", callback_data="views")],
+        [InlineKeyboardButton("🌟 تمييز فيديو", callback_data="highlight")],
+        [InlineKeyboardButton("💎 خدمات بالنقاط", callback_data="points")],
+        [InlineKeyboardButton("📨 رابط الدعوة", callback_data="invite")],
     ]
-    await update.message.reply_text("مرحبًا بك، اختر خدمة:", reply_markup=InlineKeyboardMarkup(buttons))
+    update.message.reply_text("اختر خدمة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def invite_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    link = f"https://t.me/{context.bot.username}?start={uid}"
-    pts = get_user(uid)["points"]
-    await update.callback_query.message.reply_text(
-        f"🔗 رابط الدعوة الخاص بك:\n{link}\n\nلك {pts} نقطة. كل دعوة = 1 نقطة."
-    )
-    await update.callback_query.answer()
-
-async def service_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button(update, context):
     query = update.callback_query
     uid = query.from_user.id
     data = query.data
+    user = get_user(uid)
 
-    if data.endswith("_time"):
-        service = data.replace("_time", "")
-        if is_locked(uid, service):
-            await query.answer("❌ لقد استخدمت هذه الخدمة مؤخرًا. انتظر 8 ساعات.")
+    if data in ["likes", "views", "highlight"]:
+        if is_limited(uid, data):
+            query.answer("⏱️ استخدمت الخدمة مؤخرًا. انتظر 8 ساعات.")
             return
-        context.user_data["service"] = service
-        context.user_data["mode"] = "time"
-        await query.message.reply_text("📎 أرسل رابط TikTok يحتوي على tiktok.com")
-
-    elif data == "menu_points":
-        pts = get_user(uid)["points"]
+        context.user_data["mode"] = "free"
+        context.user_data["service"] = data
+        query.message.reply_text("📎 أرسل رابط فيديو تيك توك يحتوي على tiktok.com")
+    elif data == "points":
+        pts = user["points"]
         if pts < 10:
-            await query.answer("❌ تحتاج 10 نقاط على الأقل لاستخدام هذه الخدمات.")
+            query.answer("❌ تحتاج 10 نقاط على الأقل.")
             return
-        buttons = [
-            [InlineKeyboardButton("❤️ لايكات (15 نقطة)", callback_data="likes_points")],
-            [InlineKeyboardButton("👁️ مشاهدات (10 نقاط)", callback_data="views_points")],
-            [InlineKeyboardButton("🌟 تمييز (15 نقطة)", callback_data="highlight_points")]
+        keyboard = [
+            [InlineKeyboardButton("❤️ لايكات (15 نقطة)", callback_data="likes_p")],
+            [InlineKeyboardButton("👁️ مشاهدات (10 نقاط)", callback_data="views_p")],
+            [InlineKeyboardButton("🌟 تمييز (15 نقطة)", callback_data="highlight_p")],
         ]
-        await query.message.reply_text("اختر خدمة بالنقاط:", reply_markup=InlineKeyboardMarkup(buttons))
-
-    elif data.endswith("_points"):
-        service = data.replace("_points", "")
-        points = get_user(uid)["points"]
-        cost = service_cost[service]
-        if points < cost:
-            await query.answer("❌ ليس لديك نقاط كافية.")
+        query.message.reply_text("اختر خدمة بنظام النقاط:", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data == "invite":
+        link = f"https://t.me/{context.bot.username}?start={uid}"
+        query.message.reply_text(f"🔗 رابط الدعوة الخاص بك:\n{link}\nكل دعوة = 1 نقطة")
+    elif data.endswith("_p"):
+        service = data.replace("_p", "")
+        cost = {"likes": 15, "views": 10, "highlight": 15}[service]
+        if user["points"] < cost:
+            query.answer("❌ ليس لديك نقاط كافية.")
             return
-        get_user(uid)["points"] -= cost
-        save_data(users)
-        context.user_data["service"] = service
+        deduct_points(uid, cost)
         context.user_data["mode"] = "points"
-        await query.message.reply_text("📎 أرسل رابط TikTok يحتوي على tiktok.com")
-    elif data == "invite_link":
-        await invite_link(update, context)
+        context.user_data["service"] = service
+        query.message.reply_text("📎 أرسل رابط فيديو تيك توك يحتوي على tiktok.com")
 
-    await query.answer()
+    query.answer()
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+def handle_link(update, context):
+    uid = update.message.from_user.id
     text = update.message.text
-    if 'tiktok.com' not in text:
-        await update.message.reply_text("❌ الرابط غير صحيح.")
+    if "tiktok.com" not in text:
+        update.message.reply_text("❌ الرابط غير صالح.")
         return
 
     service = context.user_data.get("service")
     mode = context.user_data.get("mode")
 
     if not service or not mode:
-        await update.message.reply_text("❗ اختر خدمة أولاً.")
+        update.message.reply_text("❗ اختر الخدمة أولاً.")
         return
 
-    if mode == "time":
-        lock_service(uid, service)
+    if mode == "free":
+        set_limit(uid, service)
 
-    await update.message.reply_text("✅ تم إرسال الخدمة، الرجاء الانتظار...")
-    await context.bot.send_message(
+    update.message.reply_text("✅ تم إرسال الخدمة بنجاح، الرجاء الانتظار...")
+
+    context.bot.send_message(
         ADMIN_ID,
-        f"🧾 طلب جديد:\nالخدمة: {service_names[service]}\nالرابط: {text}\nالمستخدم: {uid}\nالنظام: {'نقاط' if mode == 'points' else 'وقت'}"
+        f"📩 طلب جديد:\nالخدمة: {service}\nالرابط: {text}\nالمستخدم: {uid}\nالنظام: {mode}"
     )
 
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CallbackQueryHandler(button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_link))
+
+    updater.start_polling()
+    updater.idle()
+
 if __name__ == "__main__":
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(service_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-    app.run_polling()
+    main()
